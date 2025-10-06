@@ -12,7 +12,6 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool, PoolError
 from dotenv import load_dotenv
-from mangum import Mangum
 
 # 加载环境变量
 load_dotenv()
@@ -393,6 +392,3 @@ if FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 else:
     print(f"Warning: frontend directory not found at {FRONTEND_DIR}")
-
-# Vercel需要mangum适配器
-handler = Mangum(app)
