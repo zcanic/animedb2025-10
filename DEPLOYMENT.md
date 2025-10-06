@@ -30,9 +30,30 @@ git push -u origin main
    - **Install Command**: `pip install -r requirements.txt`
 6. 点击 "Deploy"
 
-### 3. 环境变量（可选）
+### 3. 环境变量配置
 
-如果需要在生产环境配置额外的环境变量，可以在Vercel项目的Settings > Environment Variables中添加。
+在Vercel项目的Settings > Environment Variables中添加以下环境变量：
+
+```
+DATABASE_URL=你的PostgreSQL连接字符串
+```
+
+**获取数据库连接字符串：**
+1. 在Vercel Dashboard中进入Storage页面
+2. 选择你的PostgreSQL数据库
+3. 复制连接字符串
+4. 在项目Settings > Environment Variables中添加
+
+### 4. 数据导入（可选）
+
+如果需要导入完整的14,257条动漫数据：
+
+```bash
+# 本地导入数据
+python import_data.py
+```
+
+**注意：** Vercel环境需要手动运行导入脚本，或者通过其他方式导入数据。
 
 ## 本地开发
 
