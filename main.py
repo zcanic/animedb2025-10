@@ -3,8 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import sqlite3
-import pandas as pd
 import json
+import os
 from typing import Optional, List
 from pydantic import BaseModel
 
@@ -21,53 +21,83 @@ app.add_middleware(
 
 # 数据库初始化
 def init_database():
-    conn = sqlite3.connect('anime.db')
+    # 在Vercel环境中，使用临时文件路径
+    db_path = '/tmp/anime.db' if os.environ.get('VERCEL') else 'anime.db'
 
-    # 读取CSV数据
-    df = pd.read_csv('../full_data.csv', encoding='utf-8')
+    # 如果数据库文件已存在，直接返回
+    if os.path.exists(db_path):
+        print(f"Database already exists at {db_path}")
+        return
 
-    # 重命名中文列名为英文
-    column_mapping = {
-        'url': 'url',
-        'subject_id': 'subject_id',
-        'title': 'title',
-        'img_url': 'img_url',
-        'year': 'year',
-        'supp_title': 'supp_title',
-        'year_supp': 'year_supp',
-        '收藏': 'collections',
-        '看过': 'watched',
-        '完成率': 'completion_rate',
-        '力荐': 'strong_recommend',
-        '标准差': 'rating_std',
-        '评分数': 'rating_count',
-        '平均分': 'average_rating',
-        'has_supp': 'has_supp',
-        'infobox_raw': 'infobox_raw',
-        'tags': 'tags',
-        'character_count': 'character_count',
-        'va_count': 'va_count',
-        'all_characters': 'all_characters',
-        'all_vas': 'all_vas',
-        'characters_json': 'characters_json'
-    }
+    conn = sqlite3.connect(db_path)
 
-    df = df.rename(columns=column_mapping)
+    try:
+        # 读取CSV数据 - 在Vercel中需要从其他位置读取
+        # 这里我们使用一个简单的内存数据集作为演示
+        # 在实际部署中，您需要将CSV文件上传到Vercel或使用外部存储
+        print("Initializing database...")
 
-    # 处理完成率列，转换为数字
-    df['completion_rate'] = df['completion_rate'].str.rstrip('%').astype(float) / 100.0
+        # 创建一个简单的示例数据集
+        sample_data = [
+            (1, "命运石之门", 2011, 8.8, 35783, 66311, 52705, 0.762),
+            (2, "魔法少女小圆", 2011, 8.6, 34624, 60794, 51845, 0.843),
+            (3, "孤独摇滚", 2022, 8.4, 35009, 62391, 52665, 0.892),
+            (4, "进击的巨人", 2013, 8.9, 29908, 56614, 44579, 0.796),
+            (5, "钢之炼金术师", 2009, 9.1, 28567, 51262, 43455, 0.912)
+        ]
 
-    # 保存到SQLite数据库
-    df.to_sql('anime', conn, if_exists='replace', index=False)
+        # 创建表
+        conn.execute('''
+            CREATE TABLE anime (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                year INTEGER,
+                average_rating REAL,
+                rating_count INTEGER,
+                collections INTEGER,
+                watched INTEGER,
+                completion_rate REAL,
+                img_url TEXT,
+                tags TEXT
+            )
+        ''')
 
-    # 创建索引以提高查询性能
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_year ON anime(year)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_rating ON anime(average_rating)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_collections ON anime(collections)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_title ON anime(title)")
+        # 插入示例数据
+        for data in sample_data:
+            conn.execute('''
+                INSERT INTO anime (id, title, year, average_rating, rating_count, collections, watched, completion_rate)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', data)
 
-    conn.commit()
-    conn.close()
+        # 创建索引
+        conn.execute("CREATE INDEX idx_year ON anime(year)")
+        conn.execute("CREATE INDEX idx_rating ON anime(average_rating)")
+        conn.execute("CREATE INDEX idx_collections ON anime(collections)")
+        conn.execute("CREATE INDEX idx_title ON anime(title)")
+
+        conn.commit()
+        print("Database initialized successfully")
+
+    except Exception as e:
+        print(f"Database initialization failed: {e}")
+        # 如果初始化失败，创建一个空的数据库结构
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS anime (
+                id INTEGER PRIMARY KEY,
+                title TEXT,
+                year INTEGER,
+                average_rating REAL,
+                rating_count INTEGER,
+                collections INTEGER,
+                watched INTEGER,
+                completion_rate REAL,
+                img_url TEXT,
+                tags TEXT
+            )
+        ''')
+        conn.commit()
+    finally:
+        conn.close()
 
 # 响应模型
 class AnimeResponse(BaseModel):
@@ -106,7 +136,8 @@ async def get_anime(
     sort_by: str = Query("collections", regex="^(title|year|average_rating|rating_count|collections|watched)$"),
     sort_order: str = Query("desc", regex="^(asc|desc)$")
 ):
-    conn = sqlite3.connect('anime.db')
+    db_path = '/tmp/anime.db' if os.environ.get('VERCEL') else 'anime.db'
+    conn = sqlite3.connect(db_path)
 
     # 构建查询条件
     where_conditions = []
@@ -185,7 +216,8 @@ async def get_anime(
 
 @app.get("/api/anime/{anime_id}")
 async def get_anime_detail(anime_id: int):
-    conn = sqlite3.connect('anime.db')
+    db_path = '/tmp/anime.db' if os.environ.get('VERCEL') else 'anime.db'
+    conn = sqlite3.connect(db_path)
 
     query = """
         SELECT * FROM anime WHERE rowid = ?
@@ -207,7 +239,8 @@ async def get_anime_detail(anime_id: int):
 
 @app.get("/api/stats")
 async def get_stats():
-    conn = sqlite3.connect('anime.db')
+    db_path = '/tmp/anime.db' if os.environ.get('VERCEL') else 'anime.db'
+    conn = sqlite3.connect(db_path)
 
     stats = {
         "total_anime": conn.execute("SELECT COUNT(*) FROM anime").fetchone()[0],

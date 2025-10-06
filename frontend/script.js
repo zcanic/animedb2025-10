@@ -36,7 +36,13 @@ const elements = {
 };
 
 // API基础URL
-const API_BASE = window.location.hostname === 'localhost' ? 'http://localhost:8000' : '';
+const API_BASE = window.location.hostname === 'localhost' ? 'http://localhost:8000' : '/api';
+
+// 更新API端点
+const API_ENDPOINTS = {
+    anime: `${API_BASE}/anime`,
+    stats: `${API_BASE}/anime/stats`
+};
 
 // 初始化应用
 document.addEventListener('DOMContentLoaded', function() {
@@ -126,7 +132,7 @@ function changePage(delta) {
 
 async function loadStats() {
     try {
-        const response = await fetch(`${API_BASE}/api/stats`);
+        const response = await fetch(API_ENDPOINTS.stats);
         if (!response.ok) throw new Error('Failed to load stats');
 
         const stats = await response.json();
@@ -158,7 +164,7 @@ async function loadAnimeData() {
         if (currentState.ratingFrom) params.append('rating_from', currentState.ratingFrom.toString());
         if (currentState.ratingTo) params.append('rating_to', currentState.ratingTo.toString());
 
-        const response = await fetch(`${API_BASE}/api/anime?${params}`);
+        const response = await fetch(`${API_ENDPOINTS.anime}?${params}`);
 
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
