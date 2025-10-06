@@ -85,7 +85,7 @@ sample_anime_data = [
     }
 ]
 
-@app.get("/api/anime/")
+@app.get("/anime/")
 async def get_anime(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -167,7 +167,7 @@ async def get_anime(
         # 使用示例数据
         return get_fallback_data(page, page_size, search, year_from, year_to, rating_from, rating_to, sort_by, sort_order)
 
-@app.get("/api/anime/stats")
+@app.get("/anime/stats")
 async def get_stats():
     conn = get_db_connection()
 
@@ -262,7 +262,7 @@ def get_fallback_stats():
 async def root():
     return {"message": "AnimeDB API is running"}
 
-@app.get("/api/health")
+@app.get("/health")
 async def health_check():
     return {"status": "healthy", "message": "AnimeDB API is working correctly"}
 
