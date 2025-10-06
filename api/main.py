@@ -6,6 +6,7 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+from mangum import Mangum
 
 # 加载环境变量
 load_dotenv()
@@ -336,5 +337,5 @@ async def health_check():
 # 挂载前端静态文件 - 在Vercel中由静态构建处理
 # app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
 
-# Vercel需要这个handler
-handler = app
+# Vercel需要mangum适配器
+handler = Mangum(app)
