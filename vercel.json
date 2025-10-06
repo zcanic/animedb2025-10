@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "main_vercel_postgres.py",
+      "src": "main_prisma_postgres.py",
       "use": "@vercel/python"
     },
     {
@@ -13,7 +13,7 @@
   "routes": [
     {
       "src": "/api/(.*)",
-      "dest": "/main_vercel_postgres.py"
+      "dest": "/main_prisma_postgres.py"
     },
     {
       "src": "/(.*)",
