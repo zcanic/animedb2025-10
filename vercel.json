@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "main_prisma_postgres.py",
+      "src": "api/main.py",
       "use": "@vercel/python"
     },
     {
@@ -12,17 +12,11 @@
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
-      "dest": "/main_prisma_postgres.py"
-    },
-    {
       "src": "/(.*)",
-      "dest": "/frontend/$1"
+      "dest": "/api/main.py"
     }
   ],
-  "functions": {
-    "main_prisma_postgres.py": {
-      "includeFiles": "frontend/**"
-    }
+  "env": {
+    "PYTHONPATH": "./api"
   }
 }
