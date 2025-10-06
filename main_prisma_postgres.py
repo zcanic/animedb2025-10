@@ -94,7 +94,7 @@ sample_anime_data = [
     }
 ]
 
-@app.get("/anime/")
+@app.get("/api/anime/")
 async def get_anime(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -219,7 +219,7 @@ async def get_anime(
         # 使用示例数据
         return get_fallback_data(page, page_size, search, year_from, year_to, rating_from, rating_to, sort_by, sort_order)
 
-@app.get("/anime/stats")
+@app.get("/api/anime/stats")
 async def get_stats():
     conn = get_db_connection()
 

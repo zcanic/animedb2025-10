@@ -35,13 +35,10 @@ const elements = {
     totalCollections: document.getElementById('total-collections')
 };
 
-// API基础URL
-const API_BASE = window.location.hostname === 'localhost' ? 'http://localhost:8000' : '/api';
-
-// 更新API端点
+// API端点 - 在Vercel部署中直接使用相对路径
 const API_ENDPOINTS = {
-    anime: `${API_BASE}/anime`,
-    stats: `${API_BASE}/anime/stats`
+    anime: '/api/anime',
+    stats: '/api/anime/stats'
 };
 
 // 初始化应用

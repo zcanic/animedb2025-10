@@ -19,5 +19,10 @@
       "src": "/(.*)",
       "dest": "/frontend/$1"
     }
-  ]
+  ],
+  "functions": {
+    "main_prisma_postgres.py": {
+      "includeFiles": "frontend/**"
+    }
+  }
 }
