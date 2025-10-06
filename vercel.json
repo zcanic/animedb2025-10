@@ -19,10 +19,5 @@
       "src": "/(.*)",
       "dest": "/frontend/$1"
     }
-  ],
-  "functions": {
-    "main_simple.py": {
-      "maxDuration": 30
-    }
-  }
+  ]
 }
