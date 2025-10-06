@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@pydantic/mcp-run-python": "npm:@jsr/pydantic__mcp-run-python@^0.0.18"
+  }
+}

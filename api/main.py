@@ -1,10 +1,16 @@
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from typing import Optional
+from pathlib import Path
+from contextlib import contextmanager
+import threading
+import atexit
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import SimpleConnectionPool, PoolError
 from dotenv import load_dotenv
 from mangum import Mangum
 
@@ -12,6 +18,14 @@ from mangum import Mangum
 load_dotenv()
 
 app = FastAPI(title="AnimeDB API", version="1.0.0")
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+POOL_MIN_CONN = int(os.getenv("DB_POOL_MIN", "1"))
+POOL_MAX_CONN = int(os.getenv("DB_POOL_MAX", "5"))
+
+_db_pool: Optional[SimpleConnectionPool] = None
+_pool_lock = threading.Lock()
 
 # CORS配置
 app.add_middleware(
@@ -22,41 +36,92 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_db_connection():
-    """获取数据库连接 - 专门处理Prisma PostgreSQL"""
-    try:
-        # 优先使用Prisma PostgreSQL连接
-        database_url = os.getenv('POSTGRES_URL') or os.getenv('DATABASE_URL')
+def _resolve_database_url(prefer_pool: bool = True) -> Optional[str]:
+    """按照Vercel文档优先使用 POSTGRES_URL (连接池)"""
+    pooled_url = os.getenv("POSTGRES_URL") if prefer_pool else None
+    direct_url = os.getenv("POSTGRES_URL_NON_POOLING")
+    legacy_url = os.getenv("DATABASE_URL")
 
-        if database_url:
-            print(f"Using database URL: {database_url[:50]}...")
+    database_url = pooled_url or legacy_url or direct_url
 
-            # Prisma PostgreSQL连接字符串通常已经是正确的格式
-            # 确保连接字符串包含SSL模式
-            if 'sslmode=' not in database_url:
-                if '?' in database_url:
-                    database_url += "&sslmode=require"
-                else:
-                    database_url += "?sslmode=require"
+    if database_url and "sslmode=" not in database_url:
+        separator = "&" if "?" in database_url else "?"
+        database_url = f"{database_url}{separator}sslmode=require"
 
-            conn = psycopg2.connect(database_url, cursor_factory=RealDictCursor)
-            print("Successfully connected to Prisma PostgreSQL database")
+    return database_url
 
-            # 测试连接
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT 1")
-                print("Database connection test passed")
 
-            return conn
-        else:
-            # 后备到示例数据模式
+def _initialise_pool() -> Optional[SimpleConnectionPool]:
+    global _db_pool
+
+    with _pool_lock:
+        if _db_pool is not None:
+            return _db_pool
+
+        database_url = _resolve_database_url(prefer_pool=True)
+
+        if not database_url:
             print("No database URL found, using sample data")
             return None
 
-    except Exception as e:
-        print(f"Database connection failed: {e}")
-        print("Falling back to sample data")
-        return None
+        try:
+            print(f"Initialising PostgreSQL connection pool (max {POOL_MAX_CONN})")
+            _db_pool = SimpleConnectionPool(
+                POOL_MIN_CONN,
+                POOL_MAX_CONN,
+                dsn=database_url,
+            )
+
+            # 验证连接
+            conn = _db_pool.getconn()
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+            finally:
+                _db_pool.putconn(conn)
+
+            print("PostgreSQL connection pool ready")
+            return _db_pool
+        except Exception as exc:
+            print(f"Database pool initialisation failed: {exc}")
+            _db_pool = None
+            return None
+
+
+@contextmanager
+def get_db_connection():
+    """提供一个可复用的数据库连接上下文 (Vercel 推荐连接池)"""
+    pool = _db_pool or _initialise_pool()
+
+    if pool is None:
+        yield None
+        return
+
+    try:
+        conn = pool.getconn()
+    except PoolError as pool_error:
+        print(f"Database pool exhausted: {pool_error}")
+        yield None
+        return
+
+    try:
+        yield conn
+        # 如调用方未提交事务，回滚以保持连接干净
+        if not conn.closed:
+            conn.rollback()
+    finally:
+        pool.putconn(conn)
+
+
+def _close_pool():
+    global _db_pool
+    if _db_pool is not None:
+        print("Closing PostgreSQL connection pool")
+        _db_pool.closeall()
+        _db_pool = None
+
+
+atexit.register(_close_pool)
 
 # 示例数据 - 当数据库不可用时使用
 sample_anime_data = [
@@ -107,26 +172,24 @@ async def get_anime(
     sort_by: str = Query("collections", regex="^(title|year|average_rating|rating_count|collections|watched)$"),
     sort_order: str = Query("desc", regex="^(asc|desc)$")
 ):
-    conn = get_db_connection()
-
-    if conn:
-        # 使用Prisma PostgreSQL数据库
-        try:
-            with conn.cursor() as cursor:
-                # 首先检查表是否存在
-                cursor.execute("""
+    with get_db_connection() as conn:
+        if conn:
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    # 首先检查表是否存在
+                    cursor.execute("""
                     SELECT EXISTS (
                         SELECT FROM information_schema.tables
                         WHERE table_schema = 'public'
                         AND table_name = 'anime'
                     );
                 """)
-                table_exists = cursor.fetchone()['exists']
+                    table_exists = cursor.fetchone()['exists']
 
-                if not table_exists:
-                    print("Table 'anime' does not exist, creating it...")
-                    # 创建表
-                    cursor.execute("""
+                    if not table_exists:
+                        print("Table 'anime' does not exist, creating it...")
+                        # 创建表
+                        cursor.execute("""
                         CREATE TABLE anime (
                             id SERIAL PRIMARY KEY,
                             title VARCHAR(255) NOT NULL,
@@ -140,9 +203,9 @@ async def get_anime(
                         )
                     """)
 
-                    # 插入示例数据
-                    for anime in sample_anime_data:
-                        cursor.execute("""
+                        # 插入示例数据
+                        for anime in sample_anime_data:
+                            cursor.execute("""
                             INSERT INTO anime (title, year, average_rating, rating_count, collections, watched, completion_rate, img_url)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """, (
@@ -151,97 +214,89 @@ async def get_anime(
                             anime['completion_rate'], anime['img_url']
                         ))
 
-                    conn.commit()
-                    print("Table 'anime' created with sample data")
+                        conn.commit()
+                        print("Table 'anime' created with sample data")
 
-                # 构建查询
-                query = "SELECT * FROM anime WHERE 1=1"
-                params = []
+                    # 构建查询
+                    query = "SELECT * FROM anime WHERE 1=1"
+                    params = []
 
-                # 搜索过滤
-                if search:
-                    query += " AND title ILIKE %s"
-                    params.append(f"%{search}%")
+                    # 搜索过滤
+                    if search:
+                        query += " AND title ILIKE %s"
+                        params.append(f"%{search}%")
 
-                # 年份过滤
-                if year_from is not None:
-                    query += " AND year >= %s"
-                    params.append(year_from)
-                if year_to is not None:
-                    query += " AND year <= %s"
-                    params.append(year_to)
+                    # 年份过滤
+                    if year_from is not None:
+                        query += " AND year >= %s"
+                        params.append(year_from)
+                    if year_to is not None:
+                        query += " AND year <= %s"
+                        params.append(year_to)
 
-                # 评分过滤
-                if rating_from is not None:
-                    query += " AND average_rating >= %s"
-                    params.append(rating_from)
-                if rating_to is not None:
-                    query += " AND average_rating <= %s"
-                    params.append(rating_to)
+                    # 评分过滤
+                    if rating_from is not None:
+                        query += " AND average_rating >= %s"
+                        params.append(rating_from)
+                    if rating_to is not None:
+                        query += " AND average_rating <= %s"
+                        params.append(rating_to)
 
-                # 排序
-                order_column = sort_by
-                order_direction = "DESC" if sort_order == "desc" else "ASC"
-                query += f" ORDER BY {order_column} {order_direction}"
+                    # 排序
+                    order_column = sort_by
+                    order_direction = "DESC" if sort_order == "desc" else "ASC"
+                    query += f" ORDER BY {order_column} {order_direction}"
 
-                # 获取总数
-                count_query = "SELECT COUNT(*) FROM (" + query + ") as subquery"
-                cursor.execute(count_query, params)
-                total = cursor.fetchone()['count']
+                    # 获取总数
+                    count_query = "SELECT COUNT(*) FROM (" + query + ") as subquery"
+                    cursor.execute(count_query, params)
+                    total = cursor.fetchone()['count']
 
-                # 分页
-                offset = (page - 1) * page_size
-                query += " LIMIT %s OFFSET %s"
-                params.extend([page_size, offset])
+                    # 分页
+                    offset = (page - 1) * page_size
+                    query += " LIMIT %s OFFSET %s"
+                    params.extend([page_size, offset])
 
-                cursor.execute(query, params)
-                anime_data = cursor.fetchall()
+                    cursor.execute(query, params)
+                    anime_data = cursor.fetchall()
 
-                total_pages = (total + page_size - 1) // page_size
+                    total_pages = (total + page_size - 1) // page_size
 
-                return {
-                    "data": anime_data,
-                    "total": total,
-                    "page": page,
-                    "page_size": page_size,
-                    "total_pages": total_pages
-                }
+                    return {
+                        "data": anime_data,
+                        "total": total,
+                        "page": page,
+                        "page_size": page_size,
+                        "total_pages": total_pages
+                    }
 
-        except Exception as e:
-            print(f"Database query error: {e}")
-            # 后备到示例数据
-            if conn:
-                conn.close()
-            return get_fallback_data(page, page_size, search, year_from, year_to, rating_from, rating_to, sort_by, sort_order)
-        finally:
-            if conn:
-                conn.close()
-    else:
-        # 使用示例数据
-        return get_fallback_data(page, page_size, search, year_from, year_to, rating_from, rating_to, sort_by, sort_order)
+            except Exception as e:
+                print(f"Database query error: {e}")
+                return get_fallback_data(page, page_size, search, year_from, year_to, rating_from, rating_to, sort_by, sort_order)
+
+    # 使用示例数据
+    return get_fallback_data(page, page_size, search, year_from, year_to, rating_from, rating_to, sort_by, sort_order)
 
 @app.get("/api/anime/stats")
 async def get_stats():
-    conn = get_db_connection()
-
-    if conn:
-        # 使用Prisma PostgreSQL数据库
-        try:
-            with conn.cursor() as cursor:
-                # 检查表是否存在
-                cursor.execute("""
+    with get_db_connection() as conn:
+        if conn:
+            try:
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    # 检查表是否存在
+                    cursor.execute("""
                     SELECT EXISTS (
                         SELECT FROM information_schema.tables
                         WHERE table_schema = 'public'
                         AND table_name = 'anime'
                     );
                 """)
-                table_exists = cursor.fetchone()['exists']
+                    table_exists = cursor.fetchone()['exists']
 
-                if not table_exists:
-                    return get_fallback_stats()
+                    if not table_exists:
+                        return get_fallback_stats()
 
-                cursor.execute("""
+                    cursor.execute("""
                     SELECT
                         COUNT(*) as total_anime,
                         MIN(year) as earliest_year,
@@ -251,29 +306,23 @@ async def get_stats():
                         SUM(watched) as total_watched
                     FROM anime
                 """)
-                stats = cursor.fetchone()
+                    stats = cursor.fetchone()
 
-                return {
-                    "total_anime": stats['total_anime'] or 0,
-                    "earliest_year": stats['earliest_year'] or 0,
-                    "latest_year": stats['latest_year'] or 0,
-                    "avg_rating": round(float(stats['avg_rating'] or 0), 2),
-                    "total_collections": stats['total_collections'] or 0,
-                    "total_watched": stats['total_watched'] or 0
-                }
+                    return {
+                        "total_anime": stats['total_anime'] or 0,
+                        "earliest_year": stats['earliest_year'] or 0,
+                        "latest_year": stats['latest_year'] or 0,
+                        "avg_rating": round(float(stats['avg_rating'] or 0), 2),
+                        "total_collections": stats['total_collections'] or 0,
+                        "total_watched": stats['total_watched'] or 0
+                    }
 
-        except Exception as e:
-            print(f"Database stats error: {e}")
-            # 后备到示例统计数据
-            if conn:
-                conn.close()
-            return get_fallback_stats()
-        finally:
-            if conn:
-                conn.close()
-    else:
-        # 使用示例统计数据
-        return get_fallback_stats()
+            except Exception as e:
+                print(f"Database stats error: {e}")
+                return get_fallback_stats()
+
+    # 使用示例统计数据
+    return get_fallback_stats()
 
 def get_fallback_data(page, page_size, search, year_from, year_to, rating_from, rating_to, sort_by, sort_order):
     """后备数据 - 当数据库不可用时使用"""
@@ -328,6 +377,11 @@ def get_fallback_stats():
 
 @app.get("/")
 async def root():
+    if FRONTEND_DIR.exists():
+        index_path = FRONTEND_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        print("Warning: index.html not found in frontend directory")
     return {"message": "AnimeDB API is running"}
 
 @app.get("/health")
@@ -335,7 +389,10 @@ async def health_check():
     return {"status": "healthy", "message": "AnimeDB API is working correctly"}
 
 # 挂载前端静态文件 - 在Vercel中由静态构建处理
-# app.mount("/", StaticFiles(directory="../frontend", html=True), name="frontend")
+if FRONTEND_DIR.exists():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+else:
+    print(f"Warning: frontend directory not found at {FRONTEND_DIR}")
 
 # Vercel需要mangum适配器
 handler = Mangum(app)
